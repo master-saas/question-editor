@@ -1,10 +1,17 @@
 import os
 import json
 import re
+import uuid
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
 import shutil
+
+def is_guid(filename):
+    """Check if filename (without extension) is a valid GUID/UUID"""
+    name = os.path.splitext(filename)[0]
+    guid_pattern = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
+    return bool(guid_pattern.match(name))
 
 class QuestionEditor:
     def __init__(self, root):
@@ -27,6 +34,8 @@ class QuestionEditor:
         self.create_ui()
         self.load_current_question()
         self.root.bind("<Control-s>", lambda e: self.save_current_question())
+        self.root.bind("<Control-Right>", lambda e: self.go_next())
+        self.root.bind("<Control-Left>", lambda e: self.go_previous())
     
     def create_ui(self):
         self.notebook = ttk.Notebook(self.root)
@@ -303,7 +312,9 @@ class QuestionEditor:
         if selection:
             idx = selection[0]
             img_name = self.current_images[idx]
-            markdown_ref = f"![]({img_name})"
+            q_index = self.get_question_index()
+            year = self.entry_year_q.get() or self.year
+            markdown_ref = f"![](/questions/{year}/{q_index}/{img_name})"
             
             self.text_context.insert(tk.END, "\n" + markdown_ref)
     
@@ -328,7 +339,9 @@ class QuestionEditor:
         if not filename:
             return
         
-        new_name = f"image_temp_{len(self.current_images) + 1}.png"
+        ext = os.path.splitext(filename)[1].lower() or ".png"
+        guid = str(uuid.uuid4())
+        new_name = f"{guid}{ext}"
         dest_path = os.path.join(folder_path, new_name)
         
         shutil.copy2(filename, dest_path)
@@ -363,7 +376,11 @@ class QuestionEditor:
         folder = self.get_current_folder()
         folder_path = os.path.join(self.questions_dir, folder)
         
-        shutil.copy2(filename, os.path.join(folder_path, f"image_temp_replace.png"))
+        ext = os.path.splitext(filename)[1].lower() or ".png"
+        guid = str(uuid.uuid4())
+        new_name = f"{guid}{ext}"
+        
+        shutil.copy2(filename, os.path.join(folder_path, new_name))
         self.load_folder_images()
     
     def move_image_up(self):
@@ -424,21 +441,42 @@ class QuestionEditor:
         folder_path = os.path.join(self.questions_dir, folder)
         
         q_index = self.get_question_index()
+        year = self.entry_year_q.get() or self.year
         
+        name_mapping = {}
         new_files = []
-        for i, old_name in enumerate(self.current_images):
-            ext = os.path.splitext(old_name)[1].lower()
-            if not ext:
-                ext = ".png"
-            new_name = f"image-{q_index}_{i + 1}{ext}"
-            new_path = os.path.join(folder_path, new_name)
-            
-            if old_name != new_name:
-                os.rename(os.path.join(folder_path, old_name), new_path)
-            
-            new_files.append(new_name)
         
-        self.current_images = new_files
+        for i, old_name in enumerate(self.current_images):
+            ext = os.path.splitext(old_name)[1].lower() or ".png"
+            
+            if not is_guid(old_name):
+                guid = str(uuid.uuid4())
+                new_name = f"{guid}{ext}"
+                new_path = os.path.join(folder_path, new_name)
+                if old_name != new_name:
+                    os.rename(os.path.join(folder_path, old_name), new_path)
+            else:
+                new_name = old_name
+            
+            full_path = f"/questions/{year}/{q_index}/{new_name}"
+            new_files.append(full_path)
+            name_mapping[old_name] = full_path
+        
+        self.current_images = [os.path.basename(f) for f in new_files]
+        
+        context = self.text_context.get("1.0", tk.END).strip()
+        
+        for old_name, new_path in name_mapping.items():
+            old_pattern = f"![]({old_name})"
+            context = context.replace(old_pattern, f"![]({new_path})")
+        
+        old_image_pattern = re.compile(r'!\[\]\(image-[\d_]+\.(png|jpg|jpeg)\)')
+        context = old_image_pattern.sub('', context)
+        
+        if new_files:
+            for img_path in new_files:
+                if f"![]({img_path})" not in context:
+                    context += f"\n\n![]({img_path})"
         
         correct_alt = self.combo_correct.get()
         alternatives = []
@@ -456,10 +494,10 @@ class QuestionEditor:
         data = {
             "title": self.entry_title_q.get(),
             "index": int(self.entry_index.get()) if self.entry_index.get().isdigit() else 1,
-            "year": int(self.entry_year_q.get()) if self.entry_year_q.get().isdigit() else 2024,
+            "year": int(self.entry_year_q.get()) if self.entry_year_q.get().isdigit() else int(self.year),
             "language": self.combo_language.get() or None,
             "discipline": self.combo_discipline.get(),
-            "context": self.text_context.get("1.0", tk.END).strip(),
+            "context": context,
             "files": new_files,
             "correctAlternative": correct_alt,
             "alternativesIntroduction": self.text_alt_intro.get("1.0", tk.END).strip(),
@@ -471,7 +509,7 @@ class QuestionEditor:
         
         messagebox.showinfo("Saved", f"Saved to {details_path}")
         
-        self.load_folder_images()
+        self.load_current_question()
     
     def go_previous(self):
         if self.current_index > 0:
